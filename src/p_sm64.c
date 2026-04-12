@@ -692,6 +692,12 @@ void P_SM64_RemoveMario(player_t *player)
 // SM64 action flags usados para interação
 #define SM64_ACT_FLAG_ATTACKING (1 << 23) // 0x00800000
 #define SM64_ACT_FREEFALL       0x0100088C
+#define SM64_ACT_TRIPLE_JUMP    0x01000882
+
+// SM64 gravity (4.0/frame) is 8x stronger than SRB2's (FRACUNIT/2 = 0.5/tick).
+// For springs to reach equivalent height: v = v_srb2 * sqrt(g_sm64/g_srb2 * SM64_SCALE)
+// = v_srb2 * sqrt(4.0 / 0.5 * 3.333) = v_srb2 * 5.16
+#define SM64_SPRING_VY_SCALE    5.16f
 
 // ---------------------------------------------------------------------------
 // P_SM64_ObjectInteraction
@@ -765,7 +771,7 @@ static void P_SM64_ObjectInteraction(player_t *player, int32_t marioId, const st
 
                 // Converte momento SRB2 → velocidade SM64
                 spring_vx = FIXED_TO_FLOAT(mo->momx) * SM64_SCALE;
-                spring_vy = FIXED_TO_FLOAT(mo->momz) * SM64_SCALE;
+                spring_vy = FIXED_TO_FLOAT(mo->momz) * SM64_SPRING_VY_SCALE;
                 spring_vz = -FIXED_TO_FLOAT(mo->momy) * SM64_SCALE;
                 sprung = true;
 
@@ -838,12 +844,17 @@ static void P_SM64_ObjectInteraction(player_t *player, int32_t marioId, const st
     // velocidade leva embora. Sem isso a gravidade cancela o impulso imediatamente.
     if (sprung)
     {
+        float hspeed = sqrtf(spring_vx * spring_vx + spring_vz * spring_vz);
+
         sm64_set_mario_position(marioId,
             Doom2SM64X(spring_launch_x),
             Doom2SM64Y(spring_launch_z),
             Doom2SM64Z(spring_launch_y));
+        // Action BEFORE velocity: ACT_TRIPLE_JUMP overwrites vel[1] internally,
+        // so we set velocity after to apply the correct spring impulse.
+        sm64_set_mario_action(marioId, SM64_ACT_TRIPLE_JUMP);
         sm64_set_mario_velocity(marioId, spring_vx, spring_vy, spring_vz);
-        sm64_set_mario_action(marioId, SM64_ACT_FREEFALL);
+        sm64_set_mario_forward_velocity(marioId, hspeed);
     }
 }
 

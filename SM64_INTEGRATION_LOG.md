@@ -296,8 +296,6 @@ Do not touch the audio system. It works.
 ### Not Working
 
 - Springs too weak (Mario cannot pass Greenflower using springs)
-- Audio completely silent
-
 ---
 
 ## Key Files
