@@ -395,11 +395,14 @@ typedef struct botmem_s
 	UINT8 thinkstate;
 } botmem_t;
 
-//Main struct
+// main struct
 typedef struct player_s
 {
-	mobj_t *mo;
+mobj_t *mo;
 
+// SM64 Integration
+boolean sm64_active;
+void *sm64_mario; // Pointer to the mario instance or state
 	// Caveat: ticcmd_t is ATTRPACK! Be careful what precedes it.
 	ticcmd_t cmd;
 

@@ -50,6 +50,7 @@ p_telept.c
 p_tick.c
 p_user.c
 p_slopes.c
+p_sm64.c
 tables.c
 r_bsp.c
 r_data.c

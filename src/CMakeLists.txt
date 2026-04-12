@@ -56,6 +56,7 @@ add_executable(SRB2SDL2 MACOSX_BUNDLE WIN32
 	p_tick.c
 	p_user.c
 	p_slopes.c
+	p_sm64.c
 	tables.c
 	r_bsp.c
 	r_data.c
@@ -144,6 +145,10 @@ if("${CMAKE_COMPILER_IS_GNUCC}" AND "${CMAKE_SYSTEM_NAME}" MATCHES "Windows")
 endif()
 
 target_compile_features(SRB2SDL2 PRIVATE c_std_23 cxx_std_17)
+
+target_include_directories(SRB2SDL2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../libsm64/dist/include)
+target_link_directories(SRB2SDL2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../libsm64/dist)
+target_link_libraries(SRB2SDL2 PRIVATE sm64)
 
 ### Configuration
 set(SRB2_CONFIG_DEV_BUILD OFF CACHE BOOL

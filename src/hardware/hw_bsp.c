@@ -11,6 +11,7 @@
 
 #include "../doomdef.h"
 #include "../doomstat.h"
+#include <math.h>
 #ifdef HWRENDER
 #include "hw_glob.h"
 #include "../r_local.h"
@@ -23,6 +24,10 @@
 #include "../i_video.h"
 #include "../w_wad.h"
 #include "../p_setup.h" // levelfadecol
+#include "../p_spec.h"
+#include "../p_slopes.h"
+#include "../p_sm64.h"
+#include "../r_sky.h"
 
 // --------------------------------------------------------------------------
 // This is global data for planes rendering
@@ -951,6 +956,106 @@ static void AdjustSegs(void)
 
 // call this routine after the BSP of a Doom wad file is loaded,
 // and it will generate all the convex polys for the hardware renderer
+static float HWR_SM64_GetPlaneZ(const sector_t *sector, fixed_t vx, fixed_t vy, boolean isceiling)
+{
+	if (isceiling)
+		return FIXED_TO_FLOAT(P_GetZAt(sector->c_slope, vx, vy, sector->ceilingheight));
+
+	return FIXED_TO_FLOAT(P_GetZAt(sector->f_slope, vx, vy, sector->floorheight));
+}
+
+static boolean HWR_SM64_FFloorBlocksMario(const ffloor_t *rover)
+{
+	if (!(rover->fofflags & FOF_EXISTS))
+		return false;
+
+	if (rover->fofflags & FOF_SWIMMABLE)
+		return false;
+
+	if (!(rover->fofflags & (FOF_BLOCKPLAYER | FOF_SOLID | FOF_QUICKSAND)))
+		return false;
+
+	return true;
+}
+
+static boolean HWR_SM64_SectorIsSwimmable(const sector_t *sector)
+{
+	if (sector->ffloors)
+	{
+		ffloor_t *rover;
+		for (rover = sector->ffloors; rover; rover = rover->next)
+		{
+			if (rover->fofflags & FOF_SWIMMABLE)
+				return true;
+		}
+	}
+
+	return (sector->special & 0xFF) == 1; // WATER_SPECIAL is 1 in SRB2
+}
+
+static float HWR_SM64_GetWalkableFloorZ(const sector_t *sector, fixed_t vx, fixed_t vy)
+{
+	float floorz = HWR_SM64_GetPlaneZ(sector, vx, vy, false);
+	ffloor_t *rover;
+
+	if (!sector->ffloors)
+		return floorz;
+
+	for (rover = sector->ffloors; rover; rover = rover->next)
+	{
+		float topz;
+
+		if (!HWR_SM64_FFloorBlocksMario(rover))
+			continue;
+
+		topz = FIXED_TO_FLOAT(P_GetFFloorTopZAt(rover, vx, vy));
+		if (topz > floorz)
+			floorz = topz;
+	}
+
+	return floorz;
+}
+
+static boolean HWR_SM64_BothCeilingsSky(sector_t *current_sector, sector_t *other_sector)
+{
+	if (!current_sector || !other_sector)
+		return false;
+
+	if (current_sector->ceilingpic == skyflatnum && other_sector->ceilingpic == skyflatnum)
+		return true;
+
+	return false;
+}
+
+static void HWR_SM64_AddWallTriangle(float x1, float y1, float z1,
+	float x2, float y2, float z2,
+	float x3, float y3, float z3,
+	float desired_nx, float desired_ny)
+{
+	// FIX SIMPLES: Sempre inverter v2 e v3 para paredes
+	// Como paredes são verticais, isso garante que todas apontem para fora consistentemente
+	P_SM64_AddStaticSurface(x1, y1, z1, x3, y3, z3, x2, y2, z2, 0, 0);
+}
+
+static void HWR_SM64_AddWallQuad(float x1, float y1, float bottom1, float top1,
+	float x2, float y2, float bottom2, float top2,
+	float desired_nx, float desired_ny)
+{
+	// QUADRADO CORRETO! AMBOS OS TRIÂNGULOS TEM EXATAMENTE A MESMA WINDING ORDER!
+	HWR_SM64_AddWallTriangle(
+		x1, y1, bottom1,
+		x2, y2, bottom2,
+		x1, y1, top1,
+		desired_nx, desired_ny
+	);
+	HWR_SM64_AddWallTriangle(
+		x2, y2, bottom2,
+		x2, y2, top2,
+		x1, y1, top1,
+		desired_nx, desired_ny
+	);
+}
+
 void HWR_CreatePlanePolygons(INT32 bspnum)
 {
 	poly_t *rootp;
@@ -1013,6 +1118,201 @@ void HWR_CreatePlanePolygons(INT32 bspnum)
 	//CONS_Debug(DBG_RENDER, "%d point divides a polygon line\n",i);
 	AdjustSegs();
 
+	{
+		size_t j;
+		INT32 k;
+		poly_t *p;
+		CONS_Printf("SM64: Processing %u subsectors for geometry...\n", (UINT32)numsubsectors);
+		for (j = 0; j < numsubsectors; j++)
+		{
+			subsector_t *sub = &subsectors[j];
+			INT32 current_sector_index;
+			if (!sub->sector) {
+				CONS_Printf("SM64: Subsector %u has no sector!\n", (UINT32)j);
+				continue;
+			}
+			current_sector_index = (INT32)(sub->sector - sectors);
+
+			p = extrasubsectors[j].planepoly;
+			if (p && p->numpts >= 3) {
+				ffloor_t *rover;
+				for (k = 2; k < p->numpts; k++)
+				{
+					fixed_t v0x = FLOAT_TO_FIXED(p->pts[0].x);
+					fixed_t v0y = FLOAT_TO_FIXED(p->pts[0].y);
+					fixed_t v1x = FLOAT_TO_FIXED(p->pts[k-1].x);
+					fixed_t v1y = FLOAT_TO_FIXED(p->pts[k-1].y);
+					fixed_t v2x = FLOAT_TO_FIXED(p->pts[k].x);
+					fixed_t v2y = FLOAT_TO_FIXED(p->pts[k].y);
+					float floor_z0 = HWR_SM64_GetPlaneZ(sub->sector, v0x, v0y, false);
+					float floor_z1 = HWR_SM64_GetPlaneZ(sub->sector, v1x, v1y, false);
+					float floor_z2 = HWR_SM64_GetPlaneZ(sub->sector, v2x, v2y, false);
+					float ceil_z0 = HWR_SM64_GetPlaneZ(sub->sector, v0x, v0y, true);
+					float ceil_z1 = HWR_SM64_GetPlaneZ(sub->sector, v1x, v1y, true);
+					float ceil_z2 = HWR_SM64_GetPlaneZ(sub->sector, v2x, v2y, true);
+
+					P_SM64_SetNextSurfaceDebugInfo(SM64_SURFACE_DEBUG_SECTOR_FLOOR, (INT32)j, -1, current_sector_index, -1, 0);
+					P_SM64_AddStaticSurface(
+						p->pts[0].x, p->pts[0].y, floor_z0,
+						p->pts[k-1].x, p->pts[k-1].y, floor_z1,
+						p->pts[k].x, p->pts[k].y, floor_z2,
+						0, false // TERRAIN_DEFAULT
+					);
+					P_SM64_SetNextSurfaceDebugInfo(SM64_SURFACE_DEBUG_SECTOR_CEILING, (INT32)j, -1, current_sector_index, -1, 0);
+					P_SM64_AddStaticSurface(
+						p->pts[0].x, p->pts[0].y, ceil_z0,
+						p->pts[k-1].x, p->pts[k-1].y, ceil_z1,
+						p->pts[k].x, p->pts[k].y, ceil_z2,
+						0, true // TERRAIN_DEFAULT
+					);
+
+					for (rover = sub->sector->ffloors; rover; rover = rover->next)
+					{
+						float fof_top0, fof_top1, fof_top2;
+						float fof_bottom0, fof_bottom1, fof_bottom2;
+
+						if (!HWR_SM64_FFloorBlocksMario(rover))
+							continue;
+
+						fof_top0 = FIXED_TO_FLOAT(P_GetFFloorTopZAt(rover, v0x, v0y));
+						fof_top1 = FIXED_TO_FLOAT(P_GetFFloorTopZAt(rover, v1x, v1y));
+						fof_top2 = FIXED_TO_FLOAT(P_GetFFloorTopZAt(rover, v2x, v2y));
+						fof_bottom0 = FIXED_TO_FLOAT(P_GetFFloorBottomZAt(rover, v0x, v0y));
+						fof_bottom1 = FIXED_TO_FLOAT(P_GetFFloorBottomZAt(rover, v1x, v1y));
+						fof_bottom2 = FIXED_TO_FLOAT(P_GetFFloorBottomZAt(rover, v2x, v2y));
+
+						P_SM64_SetNextSurfaceDebugInfo(SM64_SURFACE_DEBUG_FOF_TOP, (INT32)j, -1,
+							current_sector_index, (INT32)(rover->master->frontsector - sectors), rover->fofflags);
+						P_SM64_AddStaticSurface(
+							p->pts[0].x, p->pts[0].y, fof_top0,
+							p->pts[k-1].x, p->pts[k-1].y, fof_top1,
+							p->pts[k].x, p->pts[k].y, fof_top2,
+							0, false
+						);
+						P_SM64_SetNextSurfaceDebugInfo(SM64_SURFACE_DEBUG_FOF_BOTTOM, (INT32)j, -1,
+							current_sector_index, (INT32)(rover->master->frontsector - sectors), rover->fofflags);
+						P_SM64_AddStaticSurface(
+							p->pts[0].x, p->pts[0].y, fof_bottom0,
+							p->pts[k-1].x, p->pts[k-1].y, fof_bottom1,
+							p->pts[k].x, p->pts[k].y, fof_bottom2,
+							0, true
+						);
+					}
+				}
+			}
+
+			// REATIVADO: Exportar paredes para colisão do Mario
+			// Simplificado para evitar bugs de teleporte
+			for (k = 0; k < sub->numlines; k++)
+			{
+				const float wall_extend = 0.5f;
+				size_t seg_idx = sub->firstline + (size_t)k;
+				seg_t *seg = &segs[seg_idx];
+				sector_t *current_sector;
+				sector_t *other_sector;
+				boolean using_back_side;
+				float vx1, vy1, vx2, vy2;
+				float dx, dy, len;
+				float nx, ny;
+				float current_floor1, current_floor2;
+				float current_ceil1, current_ceil2;
+				float other_floor1, other_floor2;
+				fixed_t fv1x, fv1y, fv2x, fv2y;
+
+				if (!seg->pv1 || !seg->pv2 || !seg->frontsector)
+					continue;
+
+				// Determinar qual setor é o "current" (o deste subsector)
+				if (sub->sector == seg->frontsector)
+				{
+					current_sector = seg->frontsector;
+					other_sector = seg->backsector;
+					using_back_side = false;
+				}
+				else if (sub->sector == seg->backsector)
+				{
+					current_sector = seg->backsector;
+					other_sector = seg->frontsector;
+					using_back_side = true;
+				}
+				else
+					continue;
+
+				// Coordenadas da parede
+				vx1 = ((polyvertex_t *)seg->pv1)->x;
+				vy1 = ((polyvertex_t *)seg->pv1)->y;
+				vx2 = ((polyvertex_t *)seg->pv2)->x;
+				vy2 = ((polyvertex_t *)seg->pv2)->y;
+
+				// Normal da parede (apontando para fora do subsector atual).
+				// (dy, -dx)/len dá o vetor à ESQUERDA da direção v1→v2, que é o
+				// lado FRONTAL do seg.  Quando o setor atual é o backsector, a
+				// esquerda aponta para o OTHER sector, então precisamos inverter.
+				dx = vx2 - vx1;
+				dy = vy2 - vy1;
+				len = sqrtf(dx*dx + dy*dy);
+				if (len < 0.001f)
+					continue;
+				nx = dy / len;
+				ny = -dx / len;
+				if (using_back_side)
+				{
+					nx = -nx;
+					ny = -ny;
+				}
+
+				// Calcular alturas nas extremidades
+				fv1x = FLOAT_TO_FIXED(vx1);
+				fv1y = FLOAT_TO_FIXED(vy1);
+				fv2x = FLOAT_TO_FIXED(vx2);
+				fv2y = FLOAT_TO_FIXED(vy2);
+
+				current_floor1 = HWR_SM64_GetPlaneZ(current_sector, fv1x, fv1y, false);
+				current_floor2 = HWR_SM64_GetPlaneZ(current_sector, fv2x, fv2y, false);
+				current_ceil1 = HWR_SM64_GetPlaneZ(current_sector, fv1x, fv1y, true);
+				current_ceil2 = HWR_SM64_GetPlaneZ(current_sector, fv2x, fv2y, true);
+
+				if (!other_sector)
+				{
+					// Parede sólida (one-sided)
+					P_SM64_SetNextSurfaceDebugInfo(SM64_SURFACE_DEBUG_WALL_ONE_SIDED, (INT32)j, (INT32)seg_idx,
+						current_sector_index, -1, 0);
+					HWR_SM64_AddWallQuad(
+						vx1 - nx*wall_extend, vy1 - ny*wall_extend, current_floor1, current_ceil1,
+						vx2 - nx*wall_extend, vy2 - ny*wall_extend, current_floor2, current_ceil2,
+						nx, ny
+					);
+				}
+				else
+				{
+					// Two-sided line - APENAS lower walls (degraus pra cima)
+					// REMOVIDO: upper walls (gap de teto) - causa paredes invisiveis na ponte
+					other_floor1 = HWR_SM64_GetPlaneZ(other_sector, fv1x, fv1y, false);
+					other_floor2 = HWR_SM64_GetPlaneZ(other_sector, fv2x, fv2y, false);
+
+					// Lower wall (degrau pra cima - vizinho mais alto)
+					// Threshold aumentado pra 48.0f para ser mais permissivo
+					if (other_floor1 > current_floor1 + 48.0f || other_floor2 > current_floor2 + 48.0f)
+					{
+						float lower_top1 = current_floor1 + (other_floor1 - current_floor1) * 0.5f;
+						float lower_top2 = current_floor2 + (other_floor2 - current_floor2) * 0.5f;
+
+						P_SM64_SetNextSurfaceDebugInfo(SM64_SURFACE_DEBUG_WALL_FLOOR_STEP, (INT32)j, (INT32)seg_idx,
+							current_sector_index, (INT32)(other_sector - sectors), 0);
+						HWR_SM64_AddWallQuad(
+							vx1 - nx*wall_extend, vy1 - ny*wall_extend, current_floor1, lower_top1,
+							vx2 - nx*wall_extend, vy2 - ny*wall_extend, current_floor2, lower_top2,
+							nx, ny
+						);
+					}
+
+					// NOTA: Upper walls (gaps de teto) são propositadamente IGNORADOS
+					// para evitar paredes invisiveis na ponte da Greenflower
+				}
+			}
+		}
+		CONS_Printf("SM64: Geometry processing complete.\n");
+	}
 	//debug debug..
 	//if (nobackpoly)
 	//    CONS_Debug(DBG_RENDER, "no back polygon %u times\n",nobackpoly);

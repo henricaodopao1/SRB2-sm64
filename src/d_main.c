@@ -97,6 +97,7 @@
 #endif
 
 #include "lua_script.h"
+#include "p_sm64.h"
 
 // Version numbers for netplay :upside_down_face:
 int    VERSION;
@@ -1462,6 +1463,8 @@ void D_SRB2Main(void)
 
 	CONS_Printf("I_InitializeTime()...\n");
 	I_InitializeTime();
+
+	P_SM64_Init("baserom.us.z64");
 
 	// Make backups of some SOCcable tables.
 	P_BackupTables();

@@ -249,6 +249,9 @@ opts+=$(debug_opts)
 
 opts+=$(foreach v,$(passthru_opts),$(if $($(v)),-D$(v)))
 
+opts+=-I../libsm64/src
+libs+=-L../libsm64/dist -lsm64
+
 opts+=$(WFLAGS) $(CPPFLAGS) $(CFLAGS)
 libs+=$(LDFLAGS)
 asflags:=$(ASFLAGS) -x assembler-with-cpp

@@ -340,8 +340,34 @@ static void Got_NetVar(UINT8 **p, INT32 playernum);
 
 /** Initializes command buffer and adds basic commands.
   */
+#include "p_sm64.h"
+
+static void Command_SM64Enable(void)
+{
+	if (COM_Argc() < 2)
+	{
+		CONS_Printf("sm64_enable <0/1>: Enable or disable SM64 Mario physics\n");
+		return;
+	}
+
+	players[consoleplayer].sm64_active = atoi(COM_Argv(1));
+	CONS_Printf("SM64 physics %s for player %d\n", players[consoleplayer].sm64_active ? "enabled" : "disabled", consoleplayer);
+	
+	if (players[consoleplayer].sm64_active)
+		P_SM64_CreateMario(&players[consoleplayer]);
+	else
+		P_SM64_RemoveMario(&players[consoleplayer]);
+}
+
+static void Command_SM64ProbeCollision(void)
+{
+	P_SM64_DebugProbeCollision(&players[consoleplayer]);
+}
+
 void COM_Init(void)
 {
+	COM_AddCommand("sm64_enable", Command_SM64Enable, 0);
+	COM_AddCommand("sm64_probe_collision", Command_SM64ProbeCollision, 0);
 	// allocate command buffer
 	VS_Alloc(&com_text, COM_BUF_SIZE);
 

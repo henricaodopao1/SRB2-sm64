@@ -11686,10 +11686,18 @@ void P_DoFollowMobj(player_t *player, mobj_t *followmobj)
 // P_PlayerThink
 //
 
+#include "p_sm64.h"
+
 void P_PlayerThink(player_t *player)
 {
 	ticcmd_t *cmd;
 	const size_t playeri = (size_t)(player - players);
+
+	if (player->sm64_active)
+	{
+		P_SM64_Tick(player);
+		return;
+	}
 
 #ifdef PARANOIA
 	if (!player->mo)

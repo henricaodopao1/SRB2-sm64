@@ -169,6 +169,26 @@
 	GLSL_WALL_FUDGES \
 	GLSL_SOFTWARE_FRAGMENT_SHADER
 
+#define GLSL_SM64_FRAGMENT_SHADER \
+	GLSL_WALL_FUDGES \
+	"uniform sampler2D tex;\n" \
+	"uniform vec4 poly_color;\n" \
+	"uniform vec4 tint_color;\n" \
+	"uniform vec4 fade_color;\n" \
+	"uniform float lighting;\n" \
+	"uniform float fade_start;\n" \
+	"uniform float fade_end;\n" \
+	GLSL_DOOM_COLORMAP \
+	GLSL_DOOM_LIGHT_EQUATION \
+	"void main(void) {\n" \
+		"vec4 texel = texture2D(tex, gl_TexCoord[0].st);\n" \
+		"vec4 base_color = vec4(mix(poly_color.rgb, texel.rgb, texel.a), poly_color.a);\n" \
+		"vec4 final_color = base_color;\n" \
+		GLSL_SOFTWARE_TINT_EQUATION \
+		GLSL_SOFTWARE_FADE_EQUATION \
+		"gl_FragColor = final_color;\n" \
+	"}\n\0"
+
 // same as above but multiplies results with the lighting value from the
 // accompanying vertex shader (stored in gl_Color) if model lighting is enabled
 #define GLSL_MODEL_FRAGMENT_SHADER \

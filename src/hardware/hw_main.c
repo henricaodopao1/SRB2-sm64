@@ -44,6 +44,7 @@
 #include "../r_translation.h"
 #include "../d_main.h"
 #include "../p_slopes.h"
+#include "../p_sm64.h"
 
 // ==========================================================================
 // the hardware driver object
@@ -58,6 +59,7 @@ static void HWR_AddSprites(sector_t *sec);
 static void HWR_ProjectSprite(mobj_t *thing);
 static void HWR_ProjectPrecipitationSprite(precipmobj_t *thing);
 static void HWR_ProjectBoundingBox(mobj_t *thing);
+static boolean HWR_DrawSM64Mario(gl_vissprite_t *spr);
 
 void HWR_AddTransparentFloor(levelflat_t *levelflat, extrasubsector_t *xsub, boolean isceiling, fixed_t fixedheight, INT32 lightlevel, INT32 alpha, sector_t *FOFSector, FBITFIELD blend, boolean fogplane, boolean chromakeyed, extracolormap_t *planecolormap);
 void HWR_AddTransparentPolyobjectFloor(levelflat_t *levelflat, polyobj_t *polysector, boolean isceiling, fixed_t fixedheight,
@@ -68,6 +70,8 @@ static boolean drawsky = true;
 // ==========================================================================
 //                                                                    GLOBALS
 // ==========================================================================
+
+static patch_t *sm64_texture_patch = NULL;
 
 static seg_t *gl_curline;
 static side_t *gl_sidedef;
@@ -3353,6 +3357,220 @@ static void HWR_DrawBoundingBox(gl_vissprite_t *vis)
 	HWR_ProcessPolygon(&Surf, v, 24, (cv_renderhitboxgldepth.value ? 0 : PF_NoDepthTest)|PF_Modulated|PF_NoTexture|PF_WireFrame, SHADER_NONE, false);
 }
 
+static GLPatch_t *HWR_GetSM64TexturePatch(void)
+{
+	GLPatch_t *grPatch;
+	const UINT8 *texture_data = P_SM64_GetTextureData();
+	INT32 width = P_SM64_GetTextureWidth();
+	INT32 height = P_SM64_GetTextureHeight();
+	size_t size;
+
+	if (!texture_data || width <= 0 || height <= 0)
+		return NULL;
+
+	if (!sm64_texture_patch)
+		sm64_texture_patch = Patch_Create((INT16)width, (INT16)height);
+
+	if (!sm64_texture_patch->hardware)
+		Patch_AllocateHardwarePatch(sm64_texture_patch);
+
+	grPatch = (GLPatch_t *)sm64_texture_patch->hardware;
+	size = (size_t)width * (size_t)height * 4;
+
+	if (!grPatch->mipmap->data)
+		grPatch->mipmap->data = Z_Malloc(size, PU_HWRMODELTEXTURE, &grPatch->mipmap->data);
+
+	{
+		memcpy(grPatch->mipmap->data, texture_data, size);
+	}
+
+	grPatch->mipmap->format = GL_TEXFMT_RGBA;
+	grPatch->mipmap->flags = TF_TRANSPARENT;
+	grPatch->mipmap->width = (UINT16)width;
+	grPatch->mipmap->height = (UINT16)height;
+	grPatch->mipmap->downloaded = 0;
+	grPatch->max_s = 1.0f;
+	grPatch->max_t = 1.0f;
+	sm64_texture_patch->width = (INT16)width;
+	sm64_texture_patch->height = (INT16)height;
+
+	HWD.pfnSetTexture(grPatch->mipmap);
+	return grPatch;
+}
+
+static boolean HWR_SM64TriangleUsesTexture(const float *uvs, size_t uv_index)
+{
+	UINT32 vtx;
+
+	for (vtx = 0; vtx < 3; vtx++)
+	{
+		size_t uv = uv_index + vtx * 2;
+
+		if (uvs[uv + 0] < 0.999f || uvs[uv + 0] > 1.001f
+			|| uvs[uv + 1] < 0.999f || uvs[uv + 1] > 1.001f)
+			return true;
+	}
+
+	return false;
+}
+
+static boolean HWR_DrawSM64Mario(gl_vissprite_t *spr)
+{
+	player_t *player;
+	const float *positions;
+	const float *colors;
+	const float *uvs;
+	UINT32 triangles;
+	UINT32 i;
+	FBITFIELD blend = 0;
+	FBITFIELD occlusion;
+	fixed_t newalpha;
+	FSurfaceInfo baseSurf;
+	sector_t *sector;
+	UINT8 lightlevel = 0;
+	boolean lightset = true;
+	extracolormap_t *colormap = NULL;
+
+	if (!spr->mobj || !(player = spr->mobj->player) || !player->sm64_active)
+		return false;
+
+	triangles = P_SM64_GetTriangleCount(player);
+	if (!triangles)
+		return false;
+
+	positions = P_SM64_GetPositionBuffer(player);
+	colors = P_SM64_GetColorBuffer(player);
+	uvs = P_SM64_GetUVBuffer(player);
+	if (!positions || !colors || !uvs)
+		return false;
+
+	if (!HWR_GetSM64TexturePatch())
+		return false;
+
+	sector = spr->mobj->subsector->sector;
+
+	if (R_ThingIsFullBright(spr->mobj))
+		lightlevel = 255;
+	else if (R_ThingIsFullDark(spr->mobj))
+		lightlevel = 0;
+	else
+		lightset = false;
+
+	if (!(spr->mobj->renderflags & RF_NOCOLORMAPS))
+		colormap = sector->extra_colormap;
+
+	if (!lightset)
+		lightlevel = sector->lightlevel > 255 ? 255 : sector->lightlevel;
+
+	if (R_ThingIsSemiBright(spr->mobj))
+		lightlevel = 128 + (lightlevel >> 1);
+
+	HWR_Lighting(&baseSurf, lightlevel, colormap);
+
+	if ((spr->mobj->flags2 & MF2_LINKDRAW) && spr->mobj->tracer)
+	{
+		occlusion = 0;
+		newalpha = spr->mobj->tracer->alpha;
+	}
+	else
+	{
+		occlusion = PF_Occlude;
+		newalpha = spr->mobj->alpha;
+	}
+
+	{
+		INT32 blendmode;
+		if (spr->mobj->frame & FF_BLENDMASK)
+			blendmode = ((spr->mobj->frame & FF_BLENDMASK) >> FF_BLENDSHIFT) + 1;
+		else
+			blendmode = spr->mobj->blendmode;
+
+		if (!cv_translucency.value)
+		{
+			baseSurf.PolyColor.s.alpha = 0xFF;
+			blend = PF_Translucent | occlusion;
+		}
+		else if (spr->mobj->flags2 & MF2_SHADOW)
+		{
+			baseSurf.PolyColor.s.alpha = 0x40;
+			blend = HWR_GetBlendModeFlag(blendmode);
+		}
+		else if (spr->mobj->frame & FF_TRANSMASK)
+		{
+			INT32 trans = (spr->mobj->frame & FF_TRANSMASK) >> FF_TRANSSHIFT;
+			blend = HWR_SurfaceBlend(blendmode, trans, &baseSurf);
+		}
+		else
+		{
+			baseSurf.PolyColor.s.alpha = 0xFF;
+			blend = HWR_GetBlendModeFlag(blendmode) | occlusion;
+		}
+	}
+
+	baseSurf.PolyColor.s.alpha = FixedMul(newalpha, baseSurf.PolyColor.s.alpha);
+
+	if (HWR_UseShader())
+		blend |= PF_ColorMapped;
+
+	// Interpolação de posição: calcula o delta entre a posição interpolada (câmera
+	// suave) e a posição do tick atual, e aplica esse delta nos vértices do mesh.
+	// Sem isso, o mesh fica "travado" a 35 Hz enquanto a câmera se move a framerate
+	// completo, criando o efeito de ghosting/stuttering.
+	{
+		interpmobjstate_t interp = {0};
+		float off_x, off_y, off_z; // deltas no espaço GL: x=SRB2.X, y=SRB2.Z, z=SRB2.Y
+		UINT32 ii;
+
+		if (R_UsingFrameInterpolation() && !paused)
+			R_InterpolateMobjState(spr->mobj, rendertimefrac, &interp);
+		else
+			R_InterpolateMobjState(spr->mobj, FRACUNIT, &interp);
+
+		// SRB2.X → GL.x, SRB2.Z(altura) → GL.y, SRB2.Y → GL.z
+		off_x = FIXED_TO_FLOAT(interp.x - spr->mobj->x);
+		off_y = FIXED_TO_FLOAT(interp.z - spr->mobj->z);
+		off_z = FIXED_TO_FLOAT(interp.y - spr->mobj->y);
+
+		for (ii = 0; ii < triangles; ii++)
+		{
+			FOutVector triVerts[3];
+			FSurfaceInfo triSurf = baseSurf;
+			size_t pos_index = (size_t)ii * 9;
+			size_t uv_index = (size_t)ii * 6;
+			size_t color_index = (size_t)ii * 9;
+			static const UINT8 vertex_order[3] = {0, 2, 1};
+			float color_r = colors[color_index + 0];
+			float color_g = colors[color_index + 1];
+			float color_b = colors[color_index + 2];
+			UINT32 vtx;
+
+			triSurf.PolyColor.s.red = (UINT8)(triSurf.PolyColor.s.red * color_r);
+			triSurf.PolyColor.s.green = (UINT8)(triSurf.PolyColor.s.green * color_g);
+			triSurf.PolyColor.s.blue = (UINT8)(triSurf.PolyColor.s.blue * color_b);
+
+			for (vtx = 0; vtx < 3; vtx++)
+			{
+				size_t src_vtx = vertex_order[vtx];
+				size_t p = pos_index + src_vtx * 3;
+				size_t uv = uv_index + src_vtx * 2;
+
+				triVerts[vtx].x = positions[p + 0] / 3.333333f + off_x;
+				triVerts[vtx].y = positions[p + 1] / 3.333333f + off_y;
+				triVerts[vtx].z = -positions[p + 2] / 3.333333f + off_z;
+				triVerts[vtx].s = uvs[uv + 0];
+				triVerts[vtx].t = uvs[uv + 1];
+			}
+
+			{
+				FBITFIELD triBlend = blend | PF_Modulated | PF_ColorMapped;
+				HWR_ProcessPolygon(&triSurf, triVerts, 3, triBlend, SHADER_SM64, false);
+			}
+		}
+	}
+
+	return true;
+}
+
 // -----------------+
 // HWR_DrawSprite   : Draw flat sprites
 //                  : (monsters, bonuses, weapons, lights, ...)
@@ -4189,6 +4407,12 @@ static void HWR_DrawSprites(void)
 			if (spr->mobj && spr->mobj->shadowscale && cv_shadow.value && !skipshadow)
 			{
 				HWR_DrawDropShadow(spr->mobj, spr->mobj->shadowscale);
+			}
+
+			if (HWR_DrawSM64Mario(spr))
+			{
+				skipshadow = false;
+				continue;
 			}
 
 			if ((spr->mobj->flags2 & MF2_LINKDRAW) && spr->mobj->tracer)

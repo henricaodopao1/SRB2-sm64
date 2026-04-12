@@ -54,6 +54,9 @@ static struct {
 	// UI tinted wipe shader
 	{GLSL_DEFAULT_VERTEX_SHADER, GLSL_UI_TINTED_WIPE_FRAGMENT_SHADER},
 
+	// SM64 shader
+	{GLSL_DEFAULT_VERTEX_SHADER, GLSL_SM64_FRAGMENT_SHADER},
+
 	{NULL, NULL},
 };
 
@@ -436,6 +439,7 @@ customshaderxlat_t shaderxlat[] =
 	{"PalettePostprocess", SHADER_PALETTE_POSTPROCESS},
 	{"UIColormapFade", SHADER_UI_COLORMAP_FADE},
 	{"UITintedWipe", SHADER_UI_TINTED_WIPE},
+	{"SM64", SHADER_SM64},
 	{NULL, 0},
 };
 
