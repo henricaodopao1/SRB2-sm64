@@ -344,19 +344,37 @@ static void Got_NetVar(UINT8 **p, INT32 playernum);
 
 static void Command_SM64Enable(void)
 {
+	player_t *player = &players[consoleplayer];
+	boolean enable;
+
 	if (COM_Argc() < 2)
 	{
 		CONS_Printf("sm64_enable <0/1>: Enable or disable SM64 Mario physics\n");
 		return;
 	}
 
-	players[consoleplayer].sm64_active = atoi(COM_Argv(1));
-	CONS_Printf("SM64 physics %s for player %d\n", players[consoleplayer].sm64_active ? "enabled" : "disabled", consoleplayer);
-	
-	if (players[consoleplayer].sm64_active)
-		P_SM64_CreateMario(&players[consoleplayer]);
+	enable = (atoi(COM_Argv(1)) != 0);
+	player->sm64_enabled = enable;
+	CONS_Printf("SM64 physics %s for player %d\n", enable ? "enabled" : "disabled", consoleplayer);
+
+	if (enable)
+	{
+		if (player->mo)
+		{
+			P_SM64_RemoveMario(player);
+			P_SM64_CreateMario(player);
+			if (player->playerstate == PST_LIVE && player->sm64_active && player->sm64_mario)
+			{
+				P_SM64_Tick(player);
+				P_SM64_Tick(player);
+
+				if (P_SM64_GetTriangleCount(player) == 0)
+					P_SM64_RemoveMario(player);
+			}
+		}
+	}
 	else
-		P_SM64_RemoveMario(&players[consoleplayer]);
+		P_SM64_RemoveMario(player);
 }
 
 static void Command_SM64ProbeCollision(void)

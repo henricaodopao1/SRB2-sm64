@@ -28,6 +28,7 @@
 #include "m_misc.h"
 #include "v_video.h" // video flags for CEchos
 #include "f_finale.h"
+#include "p_sm64.h"
 #include "netcode/net_command.h"
 
 // CTF player names
@@ -2729,6 +2730,7 @@ void P_KillMobj(mobj_t *target, mobj_t *inflictor, mobj_t *source, UINT8 damaget
 			}
 		}
 		target->player->playerstate = PST_DEAD;
+		P_SM64_KillMario(target->player);
 
 		if (target->player == &players[consoleplayer])
 		{
@@ -3297,14 +3299,16 @@ static boolean P_TagDamage(mobj_t *target, mobj_t *inflictor, mobj_t *source, IN
 	{
 		if (player->spheres > 0)
 		{
-			P_PlayRinglossSound(target);
+			if (!player->sm64_enabled)
+				P_PlayRinglossSound(target);
 			P_PlayerRingBurst(player, player->spheres);
 			player->spheres = 0;
 		}
 	}
 	else if (player->rings > 0) // Ring loss
 	{
-		P_PlayRinglossSound(target);
+		if (!player->sm64_enabled)
+			P_PlayRinglossSound(target);
 		P_PlayerRingBurst(player, player->rings);
 		player->rings = 0;
 	}
@@ -3581,7 +3585,8 @@ static void P_RingDamage(player_t *player, mobj_t *inflictor, mobj_t *source, IN
 	}
 
 	// Ring loss sound plays despite hitting spikes
-	P_PlayRinglossSound(player->mo); // Ringledingle!
+	if (!player->sm64_enabled)
+		P_PlayRinglossSound(player->mo); // Ringledingle!
 	P_PlayerRingBurst(player, damage);
 
 	if (dospheres)

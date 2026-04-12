@@ -37,6 +37,7 @@
 #include "f_finale.h"
 #include "m_cond.h"
 #include "netcode/net_command.h"
+#include "p_sm64.h"
 
 static CV_PossibleValue_t CV_BobSpeed[] = {{0, "MIN"}, {4*FRACUNIT, "MAX"}, {0, NULL}};
 consvar_t cv_movebob = CVAR_INIT ("movebob", "1.0", CV_FLOAT|CV_SAVE, CV_BobSpeed, NULL);
@@ -11759,6 +11760,11 @@ void P_AfterPlayerSpawn(INT32 playernum)
 
 	if (p->pflags & PF_FINISHED && !(p->exiting))
 		P_GiveFinishFlags(p);
+
+	if (p->sm64_enabled && !p->spectator)
+		P_SM64_CreateMario(p);
+	else
+		P_SM64_RemoveMario(p);
 }
 
 // spawn it at a playerspawn mapthing

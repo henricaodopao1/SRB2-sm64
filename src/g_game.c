@@ -38,6 +38,7 @@
 #include "st_stuff.h"
 #include "z_zone.h"
 #include "i_video.h"
+#include "p_sm64.h"
 #include "byteptr.h"
 #include "i_joy.h"
 #include "r_local.h"
@@ -2611,6 +2612,7 @@ void G_PlayerReborn(INT32 player, boolean betweenmaps)
 	boolean outofcoop;
 	boolean removing;
 	boolean muted;
+	boolean sm64_enabled;
 	INT16 bot;
 	SINT8 pity;
 	INT16 rings;
@@ -2632,6 +2634,10 @@ void G_PlayerReborn(INT32 player, boolean betweenmaps)
 	pflags = (players[player].pflags & (PF_FLIPCAM|PF_ANALOGMODE|PF_DIRECTIONCHAR|PF_AUTOBRAKE|PF_TAGIT|PF_GAMETYPEOVER));
 	playerangleturn = players[player].angleturn;
 	oldrelangleturn = players[player].oldrelangleturn;
+	sm64_enabled = players[player].sm64_enabled;
+
+	if (players[player].sm64_mario)
+		P_SM64_RemoveMario(&players[player]);
 
 	if (!betweenmaps)
 		pflags |= (players[player].pflags & PF_FINISHED);
@@ -2709,6 +2715,7 @@ void G_PlayerReborn(INT32 player, boolean betweenmaps)
 	p->muted = muted;
 	p->angleturn = playerangleturn;
 	p->oldrelangleturn = oldrelangleturn;
+	p->sm64_enabled = sm64_enabled;
 
 	// save player config truth reborn
 	p->skincolor = skincolor;

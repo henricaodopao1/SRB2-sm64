@@ -401,6 +401,7 @@ typedef struct player_s
 mobj_t *mo;
 
 // SM64 Integration
+boolean sm64_enabled;
 boolean sm64_active;
 void *sm64_mario; // Pointer to the mario instance or state
 	// Caveat: ticcmd_t is ATTRPACK! Be careful what precedes it.

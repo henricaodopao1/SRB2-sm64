@@ -36,6 +36,8 @@ void P_SM64_RemoveMario(player_t *player);
 
 // Tick Mario physics
 void P_SM64_Tick(player_t *player);
+void P_SM64_DeathTick(player_t *player);
+void P_SM64_KillMario(player_t *player);
 
 // Access the current frame mesh for hardware rendering.
 UINT32 P_SM64_GetTriangleCount(const player_t *player);

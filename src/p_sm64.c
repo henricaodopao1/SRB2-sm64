@@ -280,6 +280,8 @@ static void P_SM64_DestroyAudio(void); // defined below with the audio section
 void P_SM64_Shutdown(void)
 {
     if (!sm64_initialized) return;
+    for (size_t i = 0; i < MAXPLAYERS; i++)
+        P_SM64_RemoveMario(&players[i]);
     P_SM64_DestroyAudio();
     sm64_global_terminate();
     if (rom_buffer) Z_Free(rom_buffer);
@@ -652,7 +654,17 @@ static void P_SM64_GenerateAudio(void)
 
 void P_SM64_CreateMario(player_t *player)
 {
-    if (!sm64_initialized || !player->mo) return;
+    if (!sm64_initialized || !player->mo)
+    {
+        mario_triangle_counts[P_SM64_PlayerIndex(player)] = 0;
+        player->sm64_active = false;
+        player->sm64_mario = NULL;
+        return;
+    }
+
+    if (player->sm64_mario)
+        P_SM64_RemoveMario(player);
+
     mario_triangle_counts[P_SM64_PlayerIndex(player)] = 0;
 
     // Initialize audio channel for Mario sounds
@@ -673,31 +685,61 @@ void P_SM64_CreateMario(player_t *player)
     if (marioId == -1) {
         CONS_Printf("SM64: Failed to create Mario! (No floor under %.2f, %.2f, %.2f?)\n", mx, my, mz);
         player->sm64_active = false;
+        player->sm64_mario = NULL;
         return;
     }
     
     CONS_Printf("SM64: Mario created successfully with ID %d\n", marioId);
     player->sm64_active = true;
     player->sm64_mario = (void*)(intptr_t)marioId;
+    P_SM64_DeathTick(player);
 }
 
 void P_SM64_RemoveMario(player_t *player)
 {
-    if (!sm64_initialized || !player->sm64_active) return;
+    if (!sm64_initialized)
+    {
+        mario_triangle_counts[P_SM64_PlayerIndex(player)] = 0;
+        player->sm64_mario = NULL;
+        player->sm64_active = false;
+        return;
+    }
+
+    if (!player->sm64_mario)
+    {
+        player->sm64_active = false;
+        mario_triangle_counts[P_SM64_PlayerIndex(player)] = 0;
+        return;
+    }
+
     sm64_mario_delete((int32_t)(intptr_t)player->sm64_mario);
+    player->sm64_mario = NULL;
     player->sm64_active = false;
     mario_triangle_counts[P_SM64_PlayerIndex(player)] = 0;
+}
+
+void P_SM64_KillMario(player_t *player)
+{
+    if (!sm64_initialized || !player || !player->sm64_active || !player->sm64_mario)
+        return;
+
+    sm64_mario_kill((int32_t)(intptr_t)player->sm64_mario);
 }
 
 // SM64 action flags usados para interação
 #define SM64_ACT_FLAG_ATTACKING (1 << 23) // 0x00800000
 #define SM64_ACT_FREEFALL       0x0100088C
 #define SM64_ACT_TRIPLE_JUMP    0x01000882
+#define SM64_FULL_HEALTH        0x0880
+#define SM64_EXTRA_HEIGHT       (112*FRACUNIT)
+#define SM64_HORIZONTAL_SPRING_EXTRA_PUSH (24*FRACUNIT)
+#define SM64_DIAGONAL_SPRING_EXTRA_PUSH   (12*FRACUNIT)
 
 // SM64 gravity (4.0/frame) is 8x stronger than SRB2's (FRACUNIT/2 = 0.5/tick).
 // For springs to reach equivalent height: v = v_srb2 * sqrt(g_sm64/g_srb2 * SM64_SCALE)
 // = v_srb2 * sqrt(4.0 / 0.5 * 3.333) = v_srb2 * 5.16
 #define SM64_SPRING_VY_SCALE    5.16f
+#define SM64_UNDERWATER_SPRING_VY_BOOST 1.25f
 
 // ---------------------------------------------------------------------------
 // P_SM64_ObjectInteraction
@@ -713,7 +755,11 @@ static void P_SM64_ObjectInteraction(player_t *player, int32_t marioId, const st
     int bx1, by1, bx2, by2;
     boolean sprung = false;
     fixed_t spring_launch_x = 0, spring_launch_y = 0, spring_launch_z = 0;
+    fixed_t spring_headroom = 0;
     float spring_vx = 0.0f, spring_vy = 0.0f, spring_vz = 0.0f;
+    boolean spring_has_horiz = false;
+    boolean pure_horizontal_spring = false;
+    mobj_t *spring_thing = NULL;
 
     if (!mo) return;
 
@@ -762,18 +808,85 @@ static void P_SM64_ObjectInteraction(player_t *player, int32_t marioId, const st
         // ---- Molas ---------------------------------------------------------
         if (thing->flags & MF_SPRING)
         {
+            if ((mo->eflags & MFE_SPRUNG) || player->powers[pw_justsprung])
+            {
+                continue;
+            }
+
             if (P_DoSpring(thing, mo))
             {
                 // P_DoSpring ajusta mo->z para cima da mola — salva para sincronizar
+                spring_thing = thing;
                 spring_launch_x = mo->x;
                 spring_launch_y = mo->y;
                 spring_launch_z = mo->z;
+                spring_headroom = 0;
 
                 // Converte momento SRB2 → velocidade SM64
                 spring_vx = FIXED_TO_FLOAT(mo->momx) * SM64_SCALE;
                 spring_vy = FIXED_TO_FLOAT(mo->momz) * SM64_SPRING_VY_SCALE;
                 spring_vz = -FIXED_TO_FLOAT(mo->momy) * SM64_SCALE;
+                spring_has_horiz = (thing->info->damage != 0);
+                pure_horizontal_spring = (thing->info->mass == 0 && thing->info->damage != 0);
+
+                if (thing->info->mass != 0 && (mo->eflags & MFE_UNDERWATER))
+                    spring_vy *= SM64_UNDERWATER_SPRING_VY_BOOST;
+
+                if (!spring_has_horiz && spring_vy > 0.0f)
+                {
+                    fixed_t headroom = mo->ceilingz - (mo->z + mo->height + FixedMul(SM64_EXTRA_HEIGHT, mo->scale));
+
+                    if (headroom < 0)
+                        headroom = 0;
+
+                    spring_headroom = headroom;
+
+                    if (headroom > 0)
+                    {
+                        float headroom_sm64 = FIXED_TO_FLOAT(headroom) * SM64_SCALE;
+                        float max_vy = sqrtf(8.0f * headroom_sm64);
+
+                        if (spring_vy > max_vy)
+                            spring_vy = max_vy;
+                    }
+                    else
+                        spring_vy = 0.0f;
+                }
+                else if (spring_has_horiz)
+                {
+                    // Ignora limite de teto pra molas horizontais/diagonais.
+                    // Para evitar o pulo forte demais (noclip) em molas diagonais vermelhas (vy original ~103),
+                    // limitamos o máximo a 78.0 e convertemos a energia restante num impulso horizontal.
+                    float max_diag_vy = 78.0f;
+                    if (spring_vy > max_diag_vy)
+                    {
+                        float comp = spring_vy / max_diag_vy;
+                        spring_vy = max_diag_vy;
+                        spring_vx *= (comp * 1.15f); // +15% de margem pra garantir o salto na plataforma
+                        spring_vz *= (comp * 1.15f);
+                    }
+                }
+
+                if (spring_has_horiz)
+                {
+                    fixed_t extra_push = FixedMul(
+                        pure_horizontal_spring ? SM64_HORIZONTAL_SPRING_EXTRA_PUSH : SM64_DIAGONAL_SPRING_EXTRA_PUSH,
+                        mo->scale);
+
+                    spring_launch_x += P_ReturnThrustX(thing, thing->angle, extra_push);
+                    spring_launch_y += P_ReturnThrustY(thing, thing->angle, extra_push);
+                }
                 sprung = true;
+
+                if (spring_has_horiz)
+                {
+                    UINT16 justsprung_flags = player->powers[pw_justsprung] & (1<<15);
+                    UINT16 justsprung_time = player->powers[pw_justsprung] & ((1<<15)-1);
+                    UINT16 min_justsprung = pure_horizontal_spring ? 20 : 10;
+
+                    if (justsprung_time < min_justsprung)
+                        player->powers[pw_justsprung] = justsprung_flags | min_justsprung;
+                }
 
                 mo->momx = 0;
                 mo->momy = 0;
@@ -811,19 +924,25 @@ static void P_SM64_ObjectInteraction(player_t *player, int32_t marioId, const st
             }
             else if (!player->powers[pw_flashing] && !player->powers[pw_invulnerability])
             {
-                // Dano de contato: usa o sistema interno do SM64 (knockback + animação)
-                // e aplica perda de anéis manualmente, sem tocar no pipeline de dano SRB2.
-                sm64_mario_take_damage(marioId, 1, 0,
-                    Doom2SM64X(thing->x),
-                    Doom2SM64Y(thing->z + thing->height/2),
-                    Doom2SM64Z(thing->y));
-
-                if (player->rings > 0)
+                if (player->rings > 0 || player->powers[pw_shield] != SH_NONE)
                 {
-                    P_PlayerRingBurst(player, player->rings);
-                    player->rings = 0;
+                    // Keep the SM64 hurt reaction and voice without letting libsm64
+                    // own the real damage/life system.
+                    sm64_mario_take_damage(marioId, 1, 0,
+                        Doom2SM64X(thing->x),
+                        Doom2SM64Y(thing->z + thing->height/2),
+                        Doom2SM64Z(thing->y));
                 }
-                player->powers[pw_flashing] = flashingtics;
+
+                // Keep SRB2's ring/life rules. Mario's death animation is handled
+                // separately when SRB2 actually kills the player.
+                if (P_DamageMobj(mo, thing, thing, 1, 0)
+                    && mo->health > 0
+                    && player->powers[pw_flashing] == flashingtics)
+                {
+                    player->powers[pw_flashing] = flashingtics - 1;
+                    P_DoPityCheck(player);
+                }
             }
             continue;
         }
@@ -845,58 +964,42 @@ static void P_SM64_ObjectInteraction(player_t *player, int32_t marioId, const st
     if (sprung)
     {
         float hspeed = sqrtf(spring_vx * spring_vx + spring_vz * spring_vz);
+        float spring_face_angle = atan2f(spring_vx, spring_vz);
 
         sm64_set_mario_position(marioId,
             Doom2SM64X(spring_launch_x),
             Doom2SM64Y(spring_launch_z),
             Doom2SM64Z(spring_launch_y));
-        // Action BEFORE velocity: ACT_TRIPLE_JUMP overwrites vel[1] internally,
-        // so we set velocity after to apply the correct spring impulse.
+
         sm64_set_mario_action(marioId, SM64_ACT_TRIPLE_JUMP);
         sm64_set_mario_velocity(marioId, spring_vx, spring_vy, spring_vz);
         sm64_set_mario_forward_velocity(marioId, hspeed);
+        
+        if (hspeed > 0.1f)
+            sm64_set_mario_faceangle(marioId, spring_face_angle);
+
     }
 }
 
-void P_SM64_Tick(player_t *player)
+static boolean P_SM64_RunTick(player_t *player, const struct SM64MarioInputs *inputs, struct SM64MarioState *state)
 {
-    if (!sm64_initialized || !player->mo || !player->sm64_active) return;
-
-    struct SM64MarioInputs inputs = {0};
-    size_t player_index = P_SM64_PlayerIndex(player);
-    angle_t view_angle;
-    
-    // libsm64 flips stickX internally, but not stickY.
-    inputs.stickX = (float)player->cmd.sidemove / 50.0f;
-    inputs.stickY = -(float)player->cmd.forwardmove / 50.0f;
-    
-    view_angle = player->mo->angle;
-    if (player == &players[consoleplayer] || player == &players[secondarydisplayplayer])
-        view_angle = P_GetLocalAngle(player);
-
-    {
-        float angle = (float)view_angle / (float)(0xFFFFFFFF) * 3.1415926535f * 2.0f;
-    
-        // SRB2's Y axis points the opposite way from SM64's Z axis.
-        inputs.camLookX = cosf(angle);
-        inputs.camLookZ = -sinf(angle);
-    }
-    
-    if (player->cmd.buttons & BT_JUMP) inputs.buttonA = 1;
-    if (player->cmd.buttons & BT_SPIN) inputs.buttonZ = 1;
-    if (player->cmd.buttons & BT_ATTACK) inputs.buttonB = 1;
-
-    struct SM64MarioState state = {0};
+    size_t player_index;
     struct SM64MarioGeometryBuffers buffers;
+    int32_t marioId;
+
+    if (!sm64_initialized || !player->mo || !player->sm64_active || !player->sm64_mario)
+        return false;
+
+    player_index = P_SM64_PlayerIndex(player);
+
     buffers.position = mario_pos_buffers[player_index];
     buffers.normal = mario_normal_buffers[player_index];
     buffers.color = mario_color_buffers[player_index];
     buffers.uv = mario_uv_buffers[player_index];
     buffers.numTrianglesUsed = 0;
 
-    int32_t marioId = (int32_t)(intptr_t)player->sm64_mario;
-
-    sm64_mario_tick(marioId, &inputs, &state, &buffers);
+    marioId = (int32_t)(intptr_t)player->sm64_mario;
+    sm64_mario_tick(marioId, inputs, state, &buffers);
 
     // Generate SM64 audio (only for consoleplayer to avoid duplicate sounds)
 #if defined(HAVE_MIXER) || defined(HAVE_MIXERX)
@@ -907,39 +1010,77 @@ void P_SM64_Tick(player_t *player)
     // SM64.X = SRB2.X
     // SM64.Y = SRB2.Z (Vertical)
     // SM64.Z = -SRB2.Y
-
     mario_triangle_counts[player_index] = buffers.numTrianglesUsed;
 
-    fixed_t nx = SM642DoomX(state.position[0]);
-    fixed_t ny = SM642DoomY(state.position[2]);
-    fixed_t nz = SM642DoomZ(state.position[1]);
-
-    // Update position directly without P_TeleportMove to avoid SRB2 collision interference
-    // SM64 handles all collision internally, we just sync the position back
-    player->mo->x = nx;
-    player->mo->y = ny;
-    player->mo->z = nz;
+    player->mo->x = SM642DoomX(state->position[0]);
+    player->mo->y = SM642DoomY(state->position[2]);
+    player->mo->z = SM642DoomZ(state->position[1]);
 
     // Unlink and relink to maintain sector/subsector consistency
     P_UnsetThingPosition(player->mo);
     P_SetThingPosition(player->mo);
 
-    // Reset momentum - SM64 controls all movement
+    // SM64 controls all movement while active.
     player->mo->momx = 0;
     player->mo->momy = 0;
     player->mo->momz = 0;
 
+    return true;
+}
+
+void P_SM64_Tick(player_t *player)
+{
+    struct SM64MarioInputs inputs = {0};
+    struct SM64MarioState state = {0};
+    angle_t view_angle;
+    int32_t marioId;
+
+    if (!sm64_initialized || !player->mo || !player->sm64_active || !player->sm64_mario)
+        return;
+
+    // libsm64 flips stickX internally, but not stickY.
+    inputs.stickX = (float)player->cmd.sidemove / 50.0f;
+    inputs.stickY = -(float)player->cmd.forwardmove / 50.0f;
+
+    view_angle = player->mo->angle;
+    if (player == &players[consoleplayer] || player == &players[secondarydisplayplayer])
+        view_angle = P_GetLocalAngle(player);
+
+    {
+        float angle = (float)view_angle / (float)(0xFFFFFFFF) * 3.1415926535f * 2.0f;
+
+        // SRB2's Y axis points the opposite way from SM64's Z axis.
+        inputs.camLookX = cosf(angle);
+        inputs.camLookZ = -sinf(angle);
+    }
+
+    if (player->cmd.buttons & BT_JUMP) inputs.buttonA = 1;
+    if (player->cmd.buttons & BT_SPIN) inputs.buttonZ = 1;
+    if (player->cmd.buttons & BT_ATTACK) inputs.buttonB = 1;
+
+    if (!P_SM64_RunTick(player, &inputs, &state))
+        return;
+
+    marioId = (int32_t)(intptr_t)player->sm64_mario;
+
     // Object interaction: springs, collectibles, enemies
     P_SM64_ObjectInteraction(player, marioId, &state);
 
-    // Decrementa pw_flashing manualmente — P_PlayerThink é bypassado para SM64
-    // então o decremento normal em p_user.c:12378 nunca roda.
-    if (player->powers[pw_flashing] && player->powers[pw_flashing] < UINT16_MAX)
-        player->powers[pw_flashing]--;
+    if (player->playerstate != PST_LIVE || player->mo->health <= 0)
+        return;
 
-    if (leveltime % (TICRATE*2) == 0) {
-        CONS_Printf("Mario ID %d | POS: %.2f, %.2f, %.2f | Act: %x\n", marioId, state.position[0], state.position[1], state.position[2], state.action);
-    }
+    // While SRB2 owns damage/lives, keep libsm64 health pinned to full so
+    // hidden SM64 damage never accumulates into an invisible life system.
+    sm64_set_mario_health(marioId, SM64_FULL_HEALTH);
+
+}
+
+void P_SM64_DeathTick(player_t *player)
+{
+    struct SM64MarioInputs inputs = {0};
+    struct SM64MarioState state = {0};
+
+    P_SM64_RunTick(player, &inputs, &state);
 }
 
 UINT32 P_SM64_GetTriangleCount(const player_t *player)

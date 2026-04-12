@@ -11693,10 +11693,24 @@ void P_PlayerThink(player_t *player)
 	ticcmd_t *cmd;
 	const size_t playeri = (size_t)(player - players);
 
-	if (player->sm64_active)
+	if (player->sm64_enabled && !player->spectator && player->mo
+		&& player->playerstate == PST_LIVE && player->mo->health > 0)
 	{
-		P_SM64_Tick(player);
-		return;
+		if (!player->sm64_active || !player->sm64_mario || !P_SM64_GetTriangleCount(player))
+		{
+			if (player->sm64_active || player->sm64_mario)
+				P_SM64_RemoveMario(player);
+
+			P_SM64_CreateMario(player);
+
+			if (player->sm64_active && player->sm64_mario)
+			{
+				P_SM64_Tick(player);
+
+				if (!P_SM64_GetTriangleCount(player))
+					P_SM64_RemoveMario(player);
+			}
+		}
 	}
 
 #ifdef PARANOIA
@@ -11711,6 +11725,7 @@ void P_PlayerThink(player_t *player)
 	if (player->mo->health <= 0 && player->playerstate == PST_LIVE) //you should be DEAD!
 	{
 		CONS_Debug(DBG_GAMELOGIC, "P_PlayerThink: Player %s in PST_LIVE with 0 health. (\"Zombie bug\")\n", sizeu1(playeri));
+		P_SM64_KillMario(player);
 		player->playerstate = PST_DEAD;
 	}
 
@@ -11939,6 +11954,9 @@ void P_PlayerThink(player_t *player)
 			P_DoPlayerExit(player, false);
 	}
 
+	if (player->sm64_active && player->sm64_mario && player->playerstate == PST_LIVE)
+		P_SM64_Tick(player);
+
 	// check water content, set stuff in mobj
 	P_MobjCheckWater(player->mo);
 
@@ -11958,6 +11976,9 @@ void P_PlayerThink(player_t *player)
 
 	if (player->playerstate == PST_DEAD)
 	{
+		if (player->sm64_active && player->sm64_mario)
+			P_SM64_DeathTick(player);
+
 		player->mo->flags2 &= ~MF2_SHADOW;
 		P_DeathThink(player);
 		LUA_HookPlayer(player, HOOK(PlayerThink));
@@ -12054,7 +12075,9 @@ void P_PlayerThink(player_t *player)
 	// Move around.
 	// Reactiontime is used to prevent movement
 	//  for a bit after a teleport.
-	if (player->mo->reactiontime)
+	if (player->sm64_active && player->sm64_mario && player->playerstate == PST_LIVE)
+		;
+	else if (player->mo->reactiontime)
 		player->mo->reactiontime--;
 	else if (player->powers[pw_carry] == CR_MINECART)
 	{
