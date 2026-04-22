@@ -1,4 +1,4 @@
-# Sonic Robo Blast 2 × Super Mario 64
+# Sonic Robo Blast 2 × Super Mario 64 (YES, THIS IS VIBE-CODED)
 
 ![SRB2 × SM64](Gemini_Generated_Image_s7lfges7lfges7lf.png)
 
